@@ -14,3 +14,14 @@ wheels/
 CLAUDE.md
 output/
 
+.DS_Store
+.claude/
+cache/
+embeddings/
+
+# teaching/ outputs
+*.zarr/
+teaching/prediction.png
+teaching/prediction.svg
+
+.*.swp

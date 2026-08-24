@@ -1,53 +1,46 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = [
 #   "geotessera",
 #   "numpy",
 #   "rasterio",
 #   "scikit-learn",
 # ]
+#
+# [tool.uv.sources]
+# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """
-Pixel Classification Tutorial with GeoTessera
+Pixel classification from locally downloaded tiles.
 
-Classify spatial pixels using TESSERA's 128-dimensional embedding tiles
-and a K-Nearest Neighbour classifier.
+This is the tile-download variant of classify_zarr.py: embeddings are
+fetched as 0.1-degree tiles into embeddings/ and everything after that
+works offline.  Unless you specifically want the tiles on disk for reuse,
+prefer classify_zarr.py, which streams only the pixels it needs straight
+from the public zarr store.
 
-Reads a GeoJSON of labeled Point features (each with a "label" property)
-(which you can generate using fetch_osm.py if you're feeling lazy),
-trains a distance-weighted KNN on embeddings sampled at those
-points, classifies every pixel in the surrounding region, and writes a
-colour-mapped GeoTIFF.
+One thing this script is careful about, and worth copying: embeddings are
+never resampled.  Training pixels are read straight out of the tiles, the
+tiles are placed side by side on their shared UTM grid (tiles in one UTM
+zone already align exactly, so a mosaic needs no reprojection at all),
+and classification happens on that native grid.  If you need the *result*
+in another projection, warp the classified map afterwards — reprojecting
+the embeddings first would blend neighbouring embedding vectors into
+values the model was never trained on.
 
 Examples
 --------
 
-  # Classify using a GeoJSON of labeled points:
-  uv run classify.py --labels labels.geojson -o classified.tif
+  uv run classify.py --labels liverpool.geojson -o classified.tif
+  uv run classify.py --labels labels.geojson -o out.tif --k 7 --buffer 0.02
 
-  # With custom KNN parameters:
-  uv run classify.py --labels labels.geojson -o classified.tif --k 7 --buffer 0.02
+  # Trial a different embedding release
+  uv run classify.py --labels labels.geojson -o out.tif \\
+      --dataset-version v1.1
 
-GeoJSON format
---------------
-
-The input GeoJSON should be a FeatureCollection of Point features, each
-with a "label" property naming its class:
-
-  {
-    "type": "FeatureCollection",
-    "features": [
-      {
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [0.12, 52.20]},
-        "properties": {"label": "water"}
-      },
-      ...
-    ]
-  }
-
-Use fetch_osm.py to generate this file from OpenStreetMap data.
+GeoJSON format: FeatureCollection of Points with "label" property.
+Use fetch_osm.py to generate from OSM data.
 """
 
 import argparse
@@ -60,47 +53,27 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from geotessera import GeoTessera
 
-# ---------------------------------------------------------------------------
-# Class definitions: name -> RGB colour
-#
-# These five land-cover classes work well as a starting point. You can
-# add your own classes here — any label string found in the GeoJSON that
-# is not listed gets a default grey colour.
-# ---------------------------------------------------------------------------
 CLASS_COLORS = {
-    "urban":    (255, 99, 71),    # tomato red
-    "water":    (65, 105, 225),   # royal blue
-    "forest":   (34, 139, 34),    # forest green
-    "farmland": (218, 165, 32),   # goldenrod
-    "road":     (169, 169, 169),  # dark grey
+    "urban":    (255, 99, 71),
+    "water":    (65, 105, 225),
+    "forest":   (34, 139, 34),
+    "farmland": (218, 165, 32),
+    "road":     (169, 169, 169),
 }
-
 DEFAULT_COLOR = (128, 128, 128)
 
 
-def load_labels(geojson_path):
-    """Load labeled points from a standard GeoJSON file.
-
-    Returns a list of (lon, lat, label) tuples.
-    """
-    with open(geojson_path) as f:
+def load_labels(path):
+    with open(path) as f:
         data = json.load(f)
-
-    points = []
-    for feature in data["features"]:
-        geom = feature["geometry"]
-        if geom["type"] != "Point":
-            continue
-        lon, lat = geom["coordinates"][:2]
-        label = feature["properties"].get("label")
-        if label is None:
-            continue
-        points.append((lon, lat, label))
-    return points
+    return [
+        (feat["geometry"]["coordinates"][0], feat["geometry"]["coordinates"][1], feat["properties"]["label"])
+        for feat in data["features"]
+        if feat["geometry"]["type"] == "Point" and feat["properties"].get("label")
+    ]
 
 
 def bbox_from_points(points, buffer=0.01):
-    """Compute a bounding box from labeled points, adding a buffer in degrees."""
     lons = [p[0] for p in points]
     lats = [p[1] for p in points]
     return (
@@ -111,158 +84,148 @@ def bbox_from_points(points, buffer=0.01):
     )
 
 
-def classify(labels_path, output_path, year=2024, k=5, buffer=0.01):
-    """Run the full classification pipeline.
+def native_mosaic(gt, bbox, year):
+    """Place the region's tiles on their shared UTM grid — no resampling.
 
-    Steps:
-      1. Load labeled points from a GeoJSON file
-      2. Sample GeoTessera embeddings at those point locations
-      3. Train a distance-weighted KNN classifier
-      4. Fetch a seamless mosaic of embeddings covering the region
-      5. Classify every pixel in the mosaic
-      6. Write a colour-mapped GeoTIFF
+    Tiles within one UTM zone share a CRS, a 10 m pixel size, and pixel
+    alignment, so a mosaic is pure array placement.  Returns
+    (mosaic, transform, crs) with mosaic shaped (H, W, 128) float32 and
+    NaN where no tile covers.
     """
-    # -- Step 1: Load labels ------------------------------------------------
-    print("Step 1/6  Loading labels...")
-    labeled_points = load_labels(labels_path)
-    if not labeled_points:
+    tiles = gt.registry.load_blocks_for_region(bbox, year)
+    if not tiles:
+        sys.exit(f"No tiles found for bbox {bbox} in year {year}")
+    print(f"  {len(tiles)} tiles to fetch")
+
+    loaded = list(gt.fetch_embeddings(tiles))
+    crs_set = {str(crs) for _, _, _, _, crs, _ in loaded}
+    if len(crs_set) > 1:
+        sys.exit(
+            f"Region spans UTM zones ({', '.join(sorted(crs_set))}); "
+            "use classify_zarr.py, which handles zone routing."
+        )
+    crs = loaded[0][4]
+    px = loaded[0][5].a  # pixel size in metres
+
+    # Combined extent, then each tile's offset in whole pixels
+    min_e = min(t.c for _, _, _, _, _, t in loaded)
+    max_n = max(t.f for _, _, _, _, _, t in loaded)
+    max_e = max(t.c + e.shape[1] * px for _, _, _, e, _, t in loaded)
+    min_n = min(t.f - e.shape[0] * px for _, _, _, e, _, t in loaded)
+    width = round((max_e - min_e) / px)
+    height = round((max_n - min_n) / px)
+
+    bands = loaded[0][3].shape[2]
+    mosaic = np.full((height, width, bands), np.nan, dtype=np.float32)
+    for _, _, _, emb, _, t in loaded:
+        col = round((t.c - min_e) / px)
+        row = round((max_n - t.f) / px)
+        mosaic[row : row + emb.shape[0], col : col + emb.shape[1], :] = emb
+
+    transform = rasterio.transform.Affine(px, 0, min_e, 0, -px, max_n)
+    return mosaic, transform, crs
+
+
+def classify(labels_path, output_path, year=2024, k=5, buffer=0.01,
+             dataset_version="v1", dataset_variant=None):
+    # Step 1: labels
+    print("Step 1/5  Loading labels...")
+    points = load_labels(labels_path)
+    if not points:
         sys.exit("Error: no labeled Point features found in the GeoJSON file.")
 
-    # Build label <-> numeric id mappings
-    unique_labels = sorted(set(p[2] for p in labeled_points))
+    unique_labels = sorted(set(p[2] for p in points))
     label_to_id = {label: i for i, label in enumerate(unique_labels)}
-    id_to_label = {i: label for label, i in label_to_id.items()}
+    print(f"  {len(points)} points across {len(unique_labels)} classes")
 
-    print(f"  Found {len(labeled_points)} points across {len(unique_labels)} classes:")
-    for label in unique_labels:
-        n = sum(1 for p in labeled_points if p[2] == label)
-        color = CLASS_COLORS.get(label, DEFAULT_COLOR)
-        print(f"    {label:12s}  {n:4d} points  RGB{color}")
+    # Step 2: sample embeddings at the labelled points (read straight from
+    # the tiles — native values, no interpolation)
+    print("Step 2/5  Sampling embeddings at labeled points...")
+    gt = GeoTessera(dataset_version=dataset_version,
+                    dataset_variant=dataset_variant,
+                    embeddings_dir="embeddings")
+    coords = [(lon, lat) for lon, lat, _ in points]
+    y_train = np.array([label_to_id[lbl] for _, _, lbl in points])
+    X_train = gt.sample_embeddings_at_points(coords, year=year)
 
-    # -- Step 2: Sample TESSERA embeddings at label locations -----------------------
-    print("Step 2/6  Sampling embeddings at labeled points...")
-    gt = GeoTessera()
-    coords = [(lon, lat) for lon, lat, _ in labeled_points]
-    labels_numeric = np.array([label_to_id[lbl] for _, _, lbl in labeled_points])
-
-    embeddings = gt.sample_embeddings_at_points(coords, year=year)
-    X_train = embeddings
-    y_train = labels_numeric
+    valid = ~np.isnan(X_train).any(axis=1)
+    if not valid.all():
+        print(f"  Dropping {int((~valid).sum())} points outside coverage")
+        X_train, y_train = X_train[valid], y_train[valid]
     print(f"  Training samples: {len(X_train)}")
 
-    # -- Step 3: Train KNN classifier --------------------------------------
+    # Step 3: train
     effective_k = min(k, len(X_train))
-    print(f"Step 3/6  Training KNN classifier (k={effective_k})...")
+    print(f"Step 3/5  Training KNN classifier (k={effective_k})...")
     clf = KNeighborsClassifier(n_neighbors=effective_k, weights="distance")
     clf.fit(X_train, y_train)
-    train_acc = clf.score(X_train, y_train)
-    print(f"  Training accuracy: {train_acc:.1%}")
+    print(f"  Training accuracy: {clf.score(X_train, y_train):.1%}")
 
-    # -- Step 4: Fetch embedding mosaic for the region ----------------------
-    bbox = bbox_from_points(labeled_points, buffer=buffer)
-    print(f"Step 4/6  Fetching mosaic for region "
+    # Step 4: fetch the region's tiles and classify on the native grid
+    bbox = bbox_from_points(points, buffer=buffer)
+    print(f"Step 4/5  Fetching tiles for region "
           f"[{bbox[0]:.4f}, {bbox[1]:.4f}, {bbox[2]:.4f}, {bbox[3]:.4f}]...")
-    mosaic, transform, crs = gt.fetch_mosaic_for_region(bbox, year=year)
+    mosaic, transform, crs = native_mosaic(gt, bbox, year)
     height, width, n_bands = mosaic.shape
-    total_pixels = height * width
-    print(f"  Mosaic: {height} x {width} pixels, {n_bands} bands")
+    print(f"  Mosaic: {height} x {width} pixels ({crs}), {n_bands} bands")
 
-    # -- Step 5: Classify every pixel ---------------------------------------
-    print(f"Step 5/6  Classifying {total_pixels:,} pixels...")
     pixels = mosaic.reshape(-1, n_bands)
-
-    # Build a mask for valid (non-NaN) pixels
     valid_mask = ~np.isnan(pixels).any(axis=1)
-
-    # Initialise with -1 (nodata)
     predictions = np.full(len(pixels), -1, dtype=np.int8)
     valid_indices = np.where(valid_mask)[0]
-
-    # Classify in batches to keep memory manageable
-    batch_size = 50_000
-    for start in range(0, len(valid_indices), batch_size):
-        batch_idx = valid_indices[start : start + batch_size]
-        predictions[batch_idx] = clf.predict(pixels[batch_idx])
-
+    print(f"  Classifying {len(valid_indices):,} of {height * width:,} pixels...")
+    for start in range(0, len(valid_indices), 50_000):
+        batch = valid_indices[start : start + 50_000]
+        predictions[batch] = clf.predict(pixels[batch])
     predictions = predictions.reshape(height, width)
-    n_classified = int((predictions >= 0).sum())
-    print(f"  Classified {n_classified:,} / {total_pixels:,} pixels "
-          f"({100 * n_classified / total_pixels:.1f}%)")
 
-    # -- Step 6: Write colour-mapped GeoTIFF --------------------------------
-    print(f"Step 6/6  Writing {output_path}...")
-
-    # Map each class id to its RGB colour
+    # Step 5: colour-mapped GeoTIFF, still in the tiles' own UTM
+    print(f"Step 5/5  Writing {output_path}...")
     rgb = np.zeros((height, width, 3), dtype=np.uint8)
-    for class_id, label in id_to_label.items():
-        color = CLASS_COLORS.get(label, DEFAULT_COLOR)
-        mask = predictions == class_id
-        rgb[mask] = color
+    for label, class_id in label_to_id.items():
+        rgb[predictions == class_id] = CLASS_COLORS.get(label, DEFAULT_COLOR)
 
     with rasterio.open(
-        output_path,
-        "w",
-        driver="GTiff",
-        height=height,
-        width=width,
-        count=3,
-        dtype="uint8",
-        crs=crs,
-        transform=transform,
-        compress="lzw",
+        output_path, "w", driver="GTiff",
+        height=height, width=width, count=3,
+        dtype="uint8", crs=crs, transform=transform, compress="lzw",
     ) as dst:
-        dst.write(rgb[:, :, 0], 1)
-        dst.write(rgb[:, :, 1], 2)
-        dst.write(rgb[:, :, 2], 3)
+        for i in range(3):
+            dst.write(rgb[:, :, i], i + 1)
 
-    # -- Print summary / legend ---------------------------------------------
-    print("\nDone! Classification written to:", output_path)
+    total_pixels = height * width
+    print(f"\nDone! Classification written to: {output_path}")
     print("\nLegend:")
     for label in unique_labels:
-        color = CLASS_COLORS.get(label, DEFAULT_COLOR)
         count = int((predictions == label_to_id[label]).sum())
-        pct = 100 * count / total_pixels
-        print(f"  {label:12s}  RGB{color!s:20s}  {pct:5.1f}%")
-    nodata_count = int((predictions == -1).sum())
-    if nodata_count > 0:
-        pct = 100 * nodata_count / total_pixels
-        print(f"  {'nodata':12s}  RGB{'(0, 0, 0)':20s}  {pct:5.1f}%")
+        print(f"  {label:12s}  RGB{CLASS_COLORS.get(label, DEFAULT_COLOR)!s:20s}"
+              f"  {100 * count / total_pixels:5.1f}%")
+    nodata = int((predictions == -1).sum())
+    if nodata:
+        print(f"  {'nodata':12s}  {'':20s}  {100 * nodata / total_pixels:5.1f}%")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pixel classification using GeoTessera embeddings and KNN",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "-l", "--labels", required=True,
-        help="GeoJSON file with labeled Point features",
-    )
-    parser.add_argument(
-        "-o", "--output", required=True,
-        help="Output GeoTIFF file path",
-    )
-    parser.add_argument(
-        "--year", type=int, default=2024,
-        help="Embedding year (default: 2024)",
-    )
-    parser.add_argument(
-        "--k", type=int, default=5,
-        help="Number of neighbours for KNN (default: 5)",
-    )
-    parser.add_argument(
-        "--buffer", type=float, default=0.01,
-        help="Buffer around training points in degrees (default: 0.01)",
-    )
-
+        description="Pixel classification using downloaded GeoTessera tiles and KNN")
+    parser.add_argument("-l", "--labels", required=True,
+                        help="GeoJSON file with labeled Point features")
+    parser.add_argument("-o", "--output", required=True,
+                        help="Output GeoTIFF file path")
+    parser.add_argument("--year", type=int, default=2024,
+                        help="Embedding year (default: 2024)")
+    parser.add_argument("--k", type=int, default=5,
+                        help="Number of neighbours for KNN (default: 5)")
+    parser.add_argument("--buffer", type=float, default=0.01,
+                        help="Buffer around training points in degrees (default: 0.01)")
+    parser.add_argument("--dataset-version", default="v1",
+                        help="Embedding release to use, e.g. v1 or v1.1 (default: v1)")
+    parser.add_argument("--dataset-variant", default=None,
+                        help="Model run within the release (default: the published one)")
     args = parser.parse_args()
-    classify(
-        labels_path=args.labels,
-        output_path=args.output,
-        year=args.year,
-        k=args.k,
-        buffer=args.buffer,
-    )
+    classify(args.labels, args.output, year=args.year, k=args.k,
+             buffer=args.buffer, dataset_version=args.dataset_version,
+             dataset_variant=args.dataset_variant)
 
 
 if __name__ == "__main__":

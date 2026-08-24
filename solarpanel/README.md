@@ -11,9 +11,9 @@ GeoTessera provides access to embeddings from the Tessera geospatial foundation 
 This example shows how geospatial embeddings can be used for solar panel detection with minimal labeled training data. The workflow demonstrates:
 
 1. **Loading labeled training data** from GeoJSON files containing positive (solar panel) and negative (no solar panel) point locations
-2. **Sampling embeddings** at labeled points using the `sample_embeddings_at_points()` API
+2. **Sampling embeddings** at labeled points, in one vectorised read from the public zarr store
 3. **Training a classifier** with scikit-learn's logistic regression model
-4. **Generating predictions** across all tiles in the region and exporting as GeoTIFF files
+4. **Generating predictions** across the region, streamed in row strips and exported as a single GeoTIFF
 5. **Visualizing results** in QGIS with both training data and prediction outputs
 
 ## Project Structure
@@ -28,8 +28,7 @@ solarpanel/
 ├── test_positive.geojson        # Test points with solar panels
 ├── test_negative.geojson        # Test points without solar panels
 ├── solarpanel.qgz               # QGIS project for visualization
-├── embeddings/                  # Downloaded GeoTessera tiles (auto-created)
-└── output/                      # Prediction GeoTIFFs (auto-created)
+└── output/                      # Prediction GeoTIFF (auto-created)
 ```
 
 ## How `main.py` Works
@@ -47,10 +46,11 @@ train_negative = [(coord, False) for coord in load_fetch_collection('train_negat
 
 ### 2. Sample Embeddings at Points
 
-GeoTessera extracts 128-dimensional embedding vectors at each labeled point location:
+One vectorised nearest-pixel read pulls the 128-dimensional embedding for every labeled point at once:
 
 ```python
-train_embeddings = gt.sample_embeddings_at_points(train_points, year=2024)
+sel = ds.sel(time=YEAR).sel(x=point_eastings, y=point_northings, method="nearest")
+train_embeddings = sel["embeddings"].values.T * scales
 ```
 
 Each point gets a 128-channel feature vector representing the spectral-temporal characteristics at that location.
@@ -82,17 +82,14 @@ This shows that embeddings can achieve good performance with relatively few labe
 The trained model is applied to every pixel in the region:
 
 ```python
-# Fetch all tiles in bounding box
-embeddings = gt.fetch_embeddings(
-    gt.registry.load_blocks_for_region(bounding_box, year=2024)
-)
-
-# For each tile, classify every pixel
-for year, lon, lat, embedding, crs, transform in embeddings:
-    h, w, _ = embedding.shape  # e.g., 1200x1200x128
-    reshaped = embedding.reshape(-1, 128)
-    preds = model.predict(reshaped)
-    pred_image = preds.reshape(h, w)
+# Slice the region from the open zone, a strip of rows at a time, so the
+# dequantised float32 pixels never all exist at once
+window = ds.sel(time=YEAR, x=slice(...), y=slice(...))
+for top in range(0, height, STRIP_ROWS):
+    strip = window.isel(y=slice(top, top + STRIP_ROWS))
+    pixels = ds.tessera.dequantise(strip["embeddings"].values,
+                                   strip["scales"].values)
+    preds = model.predict(pixels.reshape(-1, 128))
 
     # Save as GeoTIFF with geospatial metadata
     with rasterio.open(output_file, "w", **metadata) as dest:
@@ -110,17 +107,17 @@ uv run main.py
 ```
 
 This will:
-1. Download necessary embedding tiles to `embeddings/` (if not already present)
+1. Open the region's UTM zone in the public zarr store (nothing lands on disk)
 2. Sample embeddings at training/test point locations
 3. Train and evaluate the logistic regression classifier
-4. Generate prediction GeoTIFFs for all tiles in the region
-5. Save outputs to `output/` directory
+4. Stream the region in strips and classify every pixel
+5. Save the prediction to `output/prediction.tif`
 
 **Expected output:**
 - Training and test accuracy metrics
 - Label subset performance analysis
 - UMAP visualization saved as `train_embeddings_umap.png`
-- Prediction GeoTIFF files in `output/prediction_*.tif`
+- A prediction GeoTIFF at `output/prediction.tif`
 
 ## Visualizing Results in QGIS
 
@@ -135,7 +132,7 @@ qgis solarpanel.qgz  # Linux
 
 The QGIS project (`solarpanel.qgz`) includes:
 - **Training data layers**: Positive and negative training points overlaid on imagery
-- **Output prediction layers**: All GeoTIFF tiles from `output/` showing predicted solar panel locations
+- **Output prediction layer**: the GeoTIFF from `output/` showing predicted solar panel locations
 - **Background imagery**: Satellite imagery for visual context
 
 You can:

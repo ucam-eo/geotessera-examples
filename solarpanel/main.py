@@ -1,60 +1,60 @@
 #!/usr/bin/env python3
 # /// script
+# requires-python = ">=3.12"
 # dependencies = [
 #   "geotessera",
 #   "scikit-learn",
 #   "umap-learn",
 #   "matplotlib",
+#   "pyproj",
 #   "rasterio",
 #   "numpy",
 # ]
+#
+# [tool.uv.sources]
+# geotessera = { path = "../../geotessera", editable = true }
 # ///
-"""Solar panel detection example using GeoTessera embeddings.
+"""Solar panel detection from Tessera embeddings.
 
-This example demonstrates:
-1. Loading labeled training/test points from GeoJSON
-2. Using sample_embeddings_at_points() API to extract embeddings
-3. Training a simple logistic regression classifier
-4. Generating pixel-level predictions across tiles
+Reads everything from the public zarr store: ``sample_points`` fetches
+the training and test embeddings, and ``iter_region`` streams the
+region in row strips so all ~34M pixels flow through the classifier
+without ever being in memory at once.  Output is a single prediction
+GeoTIFF on the native UTM grid.
 
 Usage:
-    uv run python solarpanel/main.py --data-dir /path/to/data
+    uv run main.py [--data-dir /path/to/data]
 """
 
-from geotessera import GeoTessera
-import json
-import rasterio
-import numpy as np
 import argparse
-from pathlib import Path
+import json
 import sys
+from pathlib import Path
+
+import numpy as np
+import rasterio
 from sklearn.linear_model import LogisticRegression
 
-# Parse command line arguments
+from geotessera import GeoTesseraZarr
+
+YEAR = 2024
+STRIP_ROWS = 256
+
 parser = argparse.ArgumentParser(description='Solar panel detection using GeoTessera')
 parser.add_argument('--data-dir', type=Path,
                     help='Directory containing data files (default: script directory)')
 args = parser.parse_args()
 
-# Set data directory (default to script's directory)
-if args.data_dir:
-    data_dir = args.data_dir
-else:
-    data_dir = Path(__file__).parent
+data_dir = args.data_dir if args.data_dir else Path(__file__).parent
 
 # Add data_dir to path so we can import util
 sys.path.insert(0, str(data_dir))
 from util import load_fetch_collection, train_with_label_subset, visualize_embeddings
 
-gt = GeoTessera(embeddings_dir="embeddings")
-
-# load bounding box from bbox.json
 bbox_file = data_dir / 'bbox.json'
 if not bbox_file.exists():
     print(f"Error: bbox.json not found at {bbox_file}")
-    print(f"Data directory: {data_dir}")
     sys.exit(1)
-
 bounding_box = json.load(open(bbox_file))['bbox']
 
 # load training and test sets
@@ -63,44 +63,33 @@ train_negative = [(a, False) for a in load_fetch_collection(str(data_dir / 'trai
 test_positive = [(a, True) for a in load_fetch_collection(str(data_dir / 'test_positive.geojson'))]
 test_negative = [(a, False) for a in load_fetch_collection(str(data_dir / 'test_negative.geojson'))]
 
-# concatenate to train and test sets
 train = train_positive + train_negative
 test = test_positive + test_negative
 
-# Extract just the coordinates for sampling
-train_points = [coord for coord, label in train]
-test_points = [coord for coord, label in test]
+gt = GeoTesseraZarr()
+print(f"Store {gt.url}")
 
-print("Sampling training embeddings...")
-train_embeddings = gt.sample_embeddings_at_points(train_points, year=2024)
+print(f"Sampling {len(train)} training and {len(test)} test points...")
+train_embeddings = gt.sample_points([coord for coord, _ in train], YEAR, progress=False)
+test_embeddings = gt.sample_points([coord for coord, _ in test], YEAR, progress=False)
 
-print("Sampling test embeddings...")
-test_embeddings = gt.sample_embeddings_at_points(test_points, year=2024)
+train_labels = np.array([label for _, label in train], dtype=np.bool_)
+test_labels = np.array([label for _, label in test], dtype=np.bool_)
 
-# Extract labels
-train_labels = np.array([label for coord, label in train], dtype=np.bool_)
-test_labels = np.array([label for coord, label in test], dtype=np.bool_)
-
-# Check for any NaN values (points outside coverage)
+# Drop points outside coverage (NaN embeddings)
 train_valid = ~np.any(np.isnan(train_embeddings), axis=1)
 test_valid = ~np.any(np.isnan(test_embeddings), axis=1)
-
 if not np.all(train_valid):
     print(f"Warning: {np.sum(~train_valid)} training points outside coverage")
-    train_embeddings = train_embeddings[train_valid]
-    train_labels = train_labels[train_valid]
-
+    train_embeddings, train_labels = train_embeddings[train_valid], train_labels[train_valid]
 if not np.all(test_valid):
     print(f"Warning: {np.sum(~test_valid)} test points outside coverage")
-    test_embeddings = test_embeddings[test_valid]
-    test_labels = test_labels[test_valid]
+    test_embeddings, test_labels = test_embeddings[test_valid], test_labels[test_valid]
 
 print(f"Found {len(train_embeddings)} training points and {len(test_embeddings)} test points.")
 
-# visualize embeddings
 visualize_embeddings(train_embeddings, train_labels, output_path=data_dir / 'train_embeddings_umap.png')
 
-# simple training of a logistic regression model
 model = LogisticRegression(max_iter=1000)
 
 # analyze performance with different label subsets
@@ -109,42 +98,40 @@ train_with_label_subset(train_embeddings, train_labels, test_embeddings, test_la
 
 # final training on all data
 model.fit(train_embeddings, train_labels)
-
 print("Training accuracy:", model.score(train_embeddings, train_labels))
 print("Test accuracy:", model.score(test_embeddings, test_labels))
 
-# we go through the embedding tiles and classify each pixel
-# then we write out a GeoTIFF with the results
-print("\nGenerating predictions for all tiles...")
-embeddings = gt.fetch_embeddings(gt.registry.load_blocks_for_region(bounding_box, year=2024))
+# Classify the whole region, streamed in strips so the dequantised
+# float32 pixels never all exist at once.
+strips = gt.iter_region(bounding_box, YEAR, strip_rows=STRIP_ROWS)
+first, transform, crs = next(strips)
+width = first.shape[1]
+print(f"\nClassifying the region in strips of {STRIP_ROWS} rows ({crs})...")
 
-# Count tiles for progress reporting
-tiles_processed = 0
-for year, lon, lat, embedding, crs, transform in embeddings:
-    # embedding is H,W,128 can reshape to (-1, 128) for prediction
-    h, w, _ = embedding.shape
-    reshaped = embedding.reshape(-1, 128)
-    preds = model.predict(reshaped)
-    # reshape back to H,W
-    pred_image = 255 - (preds.reshape(h, w).astype(np.uint8) * 255)
-    # write out GeoTIFF using rasterio
-    out_meta = {
-        "driver": "GTiff",
-        "height": h,
-        "width": w,
-        "count": 1,
-        "dtype": rasterio.uint8,
-        "crs": crs,
-        "transform": transform,
-    }
-    # create filename based on lon/lat (in data_dir/output/)
-    output_dir = data_dir / "output"
-    output_dir.mkdir(exist_ok=True)
-    out_filename = output_dir / f"prediction_{lon:.4f}_{lat:.4f}.tif"
-    with rasterio.open(out_filename, "w", **out_meta) as dest:
-        dest.write(pred_image, 1)
 
-    tiles_processed += 1
-    print(f"Processed tile {tiles_processed}: ({lon:.2f}, {lat:.2f})")
+def classify_strip(block):
+    pixels = block.reshape(-1, block.shape[2])
+    valid = ~np.isnan(pixels).any(axis=1)
+    preds = np.zeros(len(pixels), dtype=np.uint8)
+    if valid.any():
+        preds[valid] = model.predict(pixels[valid])
+    # 0 = solar panel (black), 255 = not (white); nodata stays white
+    return (255 - preds * 255).astype(np.uint8).reshape(-1, width)
 
-print(f"\n✅ Predictions saved to {output_dir}/ ({tiles_processed} tiles)")
+
+output_dir = data_dir / "output"
+output_dir.mkdir(exist_ok=True)
+out_filename = output_dir / "prediction.tif"
+images = [classify_strip(first)]
+for block, _, _ in strips:
+    images.append(classify_strip(block))
+    print(f"  {sum(i.shape[0] for i in images)} rows classified")
+prediction = np.concatenate(images, axis=0)
+
+with rasterio.open(
+    out_filename, "w", driver="GTiff", height=prediction.shape[0], width=width,
+    count=1, dtype=rasterio.uint8, crs=crs, transform=transform, compress="lzw",
+) as dest:
+    dest.write(prediction, 1)
+
+print(f"\n✅ Prediction saved to {out_filename}")
