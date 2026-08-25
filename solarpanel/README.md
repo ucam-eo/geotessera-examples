@@ -1,7 +1,10 @@
 # Solar panel detection
 
 Trains a solar-panel detector from labelled points and applies it to a
-58km region, streamed from the public zarr store.
+58km region, streamed from the public zarr store. The
+[teaching tour](../teaching/) is a useful prerequisite: step 1
+introduces reading embeddings through `GeoTesseraZarr`, and step 4
+explains the store format underneath.
 
 ```
 uv run main.py
@@ -31,10 +34,14 @@ solarpanel/
 ├── test_positive.geojson        # Test points with solar panels
 ├── test_negative.geojson        # Test points without solar panels
 ├── solarpanel.qgz               # QGIS project for visualisation
-└── output/                      # Prediction GeoTIFF (auto-created)
+└── output/                      # Prediction, patches, detections (auto-created)
 ```
 
 ## How it works
+
+The store is wrapped in zarr's experimental `CacheStore`, so chunks
+fetched while sampling the training points are reused when the same
+region streams through the classifier.
 
 The labelled points are sampled in one call, which issues a bulk read
 per UTM zone:
@@ -55,13 +62,25 @@ for block, transform, crs in gt.iter_region(bbox, YEAR, strip_rows=256):
     preds = model.predict(block.reshape(-1, 128))
 ```
 
-Each strip is written into a single-band GeoTIFF, where 0 marks a
-predicted solar panel and 255 marks the rest.
+The classified strips concatenate into a single-band GeoTIFF, where 0
+marks a predicted solar panel and 255 marks the rest.
+
+Finally, the largest detected clusters become fixed-size patches, the
+window a second-stage model would consume:
+
+```python
+patch, transform, crs = gt.read_patch(lon, lat, YEAR, 64)
+proba = model.predict_proba(patch.reshape(-1, 128))[:, 1]
+```
+
+Each patch is rescored pixel by pixel, giving the detection a
+confidence and a probability map for the review card.
 
 ## Viewing the result
 
 The QGIS project `solarpanel.qgz` overlays the training points and the
-prediction layer on satellite imagery:
+prediction layer on satellite imagery, and `output/detections.geojson`
+adds the scored detections:
 
 ```
 open solarpanel.qgz   # macOS
