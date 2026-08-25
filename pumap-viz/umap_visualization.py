@@ -1,7 +1,8 @@
 # /// script
 # dependencies = [
 #     "rasterio",
-#     "numpy>=1.24.0,<2.0",
+#     "numpy",
+#     "zarr>=3.3",
 #     "umap-learn",
 #     "scikit-learn",
 #     "tensorflow",
@@ -41,9 +42,18 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 import joblib
 
+from zarr.experimental.cache_store import CacheStore
+from zarr.storage import MemoryStore
+
 from geotessera import GeoTesseraZarr
+from geotessera.store import DEFAULT_STORE, zarr_store
 from geotessera.visualization import calculate_bbox_from_file
 from geotessera.country import get_country_bbox
+
+# The region is streamed twice, once to sample pixels for UMAP training
+# and once to render.  A session cache serves the second pass from
+# memory while the region fits within max_size.
+CACHE_BYTES = 2 * 1024**3
 
 warnings.filterwarnings("ignore")
 
@@ -403,7 +413,13 @@ def main():
         # Set random seed
         np.random.seed(args.random_seed)
 
-        gt = GeoTesseraZarr()
+        gt = GeoTesseraZarr(
+            CacheStore(
+                zarr_store(DEFAULT_STORE),
+                cache_store=MemoryStore(),
+                max_size=CACHE_BYTES,
+            )
+        )
 
         # Load and sample embedding data
         sampled_data = load_embeddings_from_geotessera(

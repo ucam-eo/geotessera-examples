@@ -9,6 +9,7 @@
 #   "pyproj",
 #   "rasterio",
 #   "numpy",
+#   "zarr>=3.3",
 # ]
 #
 # [tool.uv.sources]
@@ -34,10 +35,19 @@ import numpy as np
 import rasterio
 from sklearn.linear_model import LogisticRegression
 
+from zarr.experimental.cache_store import CacheStore
+from zarr.storage import MemoryStore
+
 from geotessera import GeoTesseraZarr
+from geotessera.store import DEFAULT_STORE, zarr_store
 
 YEAR = 2024
 STRIP_ROWS = 256
+
+# The training points fall inside the region streamed afterwards; a
+# session cache lets the strip pass reuse chunks the point sampling
+# already fetched.
+CACHE_BYTES = 2 * 1024**3
 
 parser = argparse.ArgumentParser(description='Solar panel detection using GeoTessera')
 parser.add_argument('--data-dir', type=Path,
@@ -65,8 +75,12 @@ test_negative = [(a, False) for a in load_fetch_collection(str(data_dir / 'test_
 train = train_positive + train_negative
 test = test_positive + test_negative
 
-gt = GeoTesseraZarr()
-print(f"Store {gt.url}")
+gt = GeoTesseraZarr(
+    CacheStore(
+        zarr_store(DEFAULT_STORE), cache_store=MemoryStore(), max_size=CACHE_BYTES
+    )
+)
+print(f"Store {DEFAULT_STORE} (cached)")
 
 print(f"Sampling {len(train)} training and {len(test)} test points...")
 train_embeddings = gt.sample_points([coord for coord, _ in train], YEAR, progress=False)
