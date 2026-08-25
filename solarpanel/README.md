@@ -10,9 +10,14 @@ uv run main.py
 This samples the training and test embeddings, trains and evaluates a
 logistic regression, streams the region through the model in row
 strips, and writes the prediction to `output/prediction.tif` on the
-native 10m UTM grid. It also writes `train_embeddings_umap.png`, a 2D
-UMAP of the training embeddings, and prints how test accuracy varies
-with the number of labels.
+native 10m UTM grid. It then extracts a 64x64 embedding patch around
+each of the five largest detections with `read_patch`, rescores the
+patch pixels with the trained model, and writes three artefacts to
+`output/`: the patches as `patch_NN.tif`, the detections with their
+confidence as `detections.geojson` for the QGIS project, and a review
+card of the probability maps as `detections.png`. It also writes
+`train_embeddings_umap.png`, a 2D UMAP of the training embeddings, and
+prints how test accuracy varies with the number of labels.
 
 ## Data
 

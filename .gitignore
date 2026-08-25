@@ -23,5 +23,6 @@ embeddings/
 *.zarr/
 teaching/prediction.png
 teaching/prediction.svg
+teaching/matryoshka.svg
 
 .*.swp

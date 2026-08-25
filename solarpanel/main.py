@@ -20,7 +20,9 @@
 ``sample_points`` fetches the training and test embeddings and
 ``iter_region`` streams the region in row strips, so the ~34M pixels
 are classified without being in memory at once. Output is a single
-prediction GeoTIFF on the native 10m UTM grid.
+prediction GeoTIFF on the native 10m UTM grid, plus a 64x64 embedding
+patch around each of the largest detections via ``read_patch``, the
+fixed-size window a second-stage model would consume.
 
 Usage:
     uv run main.py [--data-dir /path/to/data]
@@ -148,3 +150,75 @@ with rasterio.open(
     dest.write(prediction, 1)
 
 print(f"\n✅ Prediction saved to {out_filename}")
+
+# Second stage: extract an embedding patch around each of the largest
+# detections, rescore its pixels with the trained model, and report the
+# detections with their confidence.
+from pyproj import Transformer
+from scipy import ndimage
+
+detected = prediction == 0
+labelled, n_found = ndimage.label(detected)
+if n_found:
+    sizes = ndimage.sum_labels(np.ones_like(labelled), labelled, range(1, n_found + 1))
+    top = np.argsort(sizes)[::-1][:5] + 1
+    centres = ndimage.center_of_mass(detected, labelled, top)
+    to_ll = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    print(f"\nScoring the {len(top)} largest of {n_found} detections...")
+
+    detections = []
+    for i, (row, col) in enumerate(centres, start=1):
+        east, north = transform * (col + 0.5, row + 0.5)
+        lon, lat = to_ll.transform(east, north)
+        patch, patch_transform, patch_crs = gt.read_patch(lon, lat, YEAR, 64)
+
+        # Probability of solar panel for every pixel of the patch.
+        pixels = patch.reshape(-1, patch.shape[2])
+        valid = ~np.isnan(pixels).any(axis=1)
+        proba = np.full(len(pixels), np.nan, dtype=np.float32)
+        if valid.any():
+            proba[valid] = model.predict_proba(pixels[valid])[:, 1]
+        proba = proba.reshape(64, 64)
+        score = float(np.nanmean(np.where(proba > 0.5, proba, np.nan)))
+
+        patch_path = output_dir / f"patch_{i:02d}.tif"
+        with rasterio.open(
+            patch_path, "w", driver="GTiff", height=64, width=64,
+            count=patch.shape[2], dtype="float32", crs=patch_crs,
+            transform=patch_transform, compress="lzw",
+        ) as dest:
+            dest.write(patch.transpose(2, 0, 1))
+        area_px = float(sizes[top[i - 1] - 1])
+        detections.append((lon, lat, area_px, score, proba))
+        print(f"  {area_px:5.0f} px at {lon:.4f},{lat:.4f}  "
+              f"confidence {score:.2f}  -> {patch_path.name}")
+
+    # A GeoJSON of the detections, for the QGIS project.
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {"area_px": area, "confidence": round(score, 3)},
+        }
+        for lon, lat, area, score, _ in detections
+    ]
+    with open(output_dir / "detections.geojson", "w") as f:
+        json.dump({"type": "FeatureCollection", "features": features}, f, indent=2)
+
+    # A review card: each patch's probability map, for a human to check.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(1, len(detections), figsize=(3 * len(detections), 3.4),
+                                layout="constrained")
+    for axis, (lon, lat, area, score, proba) in zip(np.atleast_1d(axes), detections):
+        shown = axis.imshow(proba, vmin=0, vmax=1, cmap="inferno")
+        axis.set_title(f"{lon:.3f},{lat:.3f}\n{area:.0f} px, p={score:.2f}", fontsize=9)
+        axis.set_xticks([])
+        axis.set_yticks([])
+    figure.colorbar(shown, ax=np.atleast_1d(axes).tolist(), shrink=0.8,
+                    label="P(solar panel)")
+    figure.savefig(output_dir / "detections.png", dpi=130)
+    print(f"\nWrote {output_dir / 'detections.geojson'} and "
+          f"{output_dir / 'detections.png'}")

@@ -17,15 +17,15 @@ exactly.
 
     uv run 04_read_raw_zarr.py --lon 0.12 --lat 52.20
 
-Three properties of the store matter here:
+Three properties of the store are useful to understand here:
 
-1. The store holds one array per UTM zone, and zone 31 alone is 81TB.
+1. The store holds one array per UTM zone, and zone 31 fully is 81TB.
    Slicing by coordinate fetches only the chunks the window overlaps.
 
 2. Embeddings are quantised as int8 with one float32 scale per pixel;
-   the real value is embeddings * scales.
+   the real value must be dequantized via embeddings * scales.
 
-3. scales carries two sentinels: NaN means water and +inf means never
+3. scales carries two sentinels. NaN means water and +inf means never
    written. Both mean no usable embedding, so np.isfinite is the mask.
 """
 
@@ -56,8 +56,6 @@ def main():
           f"years {[int(t) for t in ds.time.values]}")
     print(f"  embeddings {ds['embeddings'].dtype}, scales {ds['scales'].dtype}")
 
-    # One tile's window, selected by projected coordinates.  A lon/lat box
-    # is a trapezium in UTM, so all four corners bound the window.
     from pyproj import Transformer
 
     west = math.floor(args.lon / TILE) * TILE
