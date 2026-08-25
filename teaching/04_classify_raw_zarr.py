@@ -12,7 +12,7 @@ Step 1 called ``GeoTesseraZarr``. This step performs the same work
 directly: select the UTM zone, open its group, tune the chunking, slice
 the window, dequantise, and mask the sentinels. It is the path to take
 when the library does not offer what is needed, such as custom chunking
-or keeping the window quantised to fit in memory.
+or reading the store from another tool entirely.
 
     uv run 04_classify_raw_zarr.py --lon 0.12 --lat 52.20
 

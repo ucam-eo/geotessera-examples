@@ -24,8 +24,8 @@ uv run 05_matryoshka.py --lon 0.12 --lat 52.20 # writes matryoshka.png
    dequantisation and sentinel masking by hand. This is the path to
    take when the library does not offer what you need.
 5. [05_matryoshka.py](05_matryoshka.py) classifies with the v2 store's
-   16-dimension `embeddings_d16` prefix and with all 128 dimensions,
-   side by side. The prefix costs an eighth of the bytes.
+   16-dimension matryoshka prefix (`depth=16`) and with all 128
+   dimensions, side by side. The prefix costs an eighth of the bytes.
 
 The smallest possible use of the package is
 [../quickstart.py](../quickstart.py).
