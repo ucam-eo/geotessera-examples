@@ -18,8 +18,8 @@ labels from the embeddings.
 
     uv run 01_classify.py --lon 0.12 --lat 52.20
 
-It writes prediction.zarr. Steps 2 and 3 render it, and step 4 repeats
-this step with plain zarr.
+It writes prediction.zarr. Steps 2 and 3 render it, and step 4 reads
+the store behind it with plain zarr.
 
 ``GeoTesseraZarr.read_region`` takes a lon/lat box and returns float32
 embeddings on their native UTM grid, with NaN where there is no data.

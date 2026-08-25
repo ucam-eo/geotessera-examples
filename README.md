@@ -33,7 +33,7 @@ model.
 
 [teaching/](teaching/) is a five-step guided tour. It starts by
 classifying land cover around a point, and renders the result as
-PNG and SVG. It then repeats the classification with plain `xarray`/`zarr` to show what
+PNG and SVG. It then reads the store with plain `xarray`/`zarr` to show what
 the geotessera library does for you. It then demonstrates the v2 store's 16-dimension
 matryoshka prefixes for faster 'sketch' analyses.
 
