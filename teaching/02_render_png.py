@@ -2,18 +2,15 @@
 # requires-python = ">=3.11"
 # dependencies = ["zarr>=3.0", "xarray>=2024.10", "numpy", "matplotlib"]
 # ///
-"""Step 2 of 5 — draw the classification as a PNG.
+"""Step 2 of 5: draw the classification as a PNG.
 
     uv run 02_render_png.py prediction.zarr
 
-Three panels side by side: what OpenStreetMap says is there, and what each of
-the two classifiers thinks is there.  Reading them together is the point — the
-places where the predictions agree with each other but disagree with OSM are
-usually places where OSM is out of date or coarse, not where the model is wrong.
-
-This is a picture of a grid of pixels, so a PNG is the honest format for it.
-Step 3 makes an SVG instead, which is better for printing and editing but needs
-a bit of work to avoid being enormous.
+It draws three panels side by side: the OpenStreetMap labels and each
+classifier's prediction. Places where the predictions agree with each
+other but disagree with OSM are usually places where OSM is out of date
+or coarse. A PNG suits a grid of pixels; step 3 produces an SVG for
+printing and editing.
 """
 
 import argparse

@@ -12,10 +12,10 @@ Queries the Overpass API for five land-cover classes (urban, water, forest,
 farmland, road) within a bounding box and saves the results as a GeoJSON
 file with a "label" property on each Point feature.
 
-For polygon features (buildings, lakes, forests), multiple sample points
-are generated inside the polygon rather than just using the centroid.
-For linear features (roads), points are sampled along the line.
-We try to get 5 points per class and discard extra ones.
+For polygon features (buildings, lakes, forests), sample points are
+generated inside the polygon rather than at the centroid. For linear
+features (roads), points are sampled along the line. Five points per
+class are kept.
 
   uv run fetch_osm.py --bbox -2.9693 53.4342 -2.9606 53.4391 -o liverpool.geojson
 """

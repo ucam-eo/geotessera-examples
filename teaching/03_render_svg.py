@@ -2,29 +2,25 @@
 # requires-python = ">=3.11"
 # dependencies = ["zarr>=3.0", "xarray>=2024.10", "numpy", "rasterio", "shapely"]
 # ///
-"""Step 3 of 5 — draw the classification as a real vector SVG.
+"""Step 3 of 5: draw the classification as a vector SVG.
 
     uv run 03_render_svg.py prediction.zarr
 
-A PNG is a grid of coloured squares.  An SVG is a set of shapes, so it stays
-sharp at any zoom and you can open it in Inkscape and restyle it.  Turning the
-one into the other means tracing the outline of every run of same-coloured
-pixels, which rasterio.features.shapes does for us.
+An SVG is a set of shapes, so it stays sharp at any zoom and can be
+restyled in a vector editor. Producing one means tracing the outline of
+every run of same-coloured pixels with rasterio.features.shapes.
 
-The catch, and the thing worth teaching here: a per-pixel classifier produces
-speckle, and speckle is disastrous for vector output.  Tracing the raw k-NN map
-of a 22 km square gives about 240,000 separate polygons and 12 MB of SVG, which
-will bring a browser to its knees.  Simplifying the outlines barely helps,
-because most of those polygons are single pixels with no spare corners to drop.
+A per-pixel classifier produces speckle, which is a problem for vector
+output: the raw k-NN map of a 22km square traces to about 240,000
+polygons and 12MB of SVG, and simplification barely helps because most
+polygons are single pixels. rasterio.features.sieve absorbs any patch
+smaller than a threshold into its surrounding neighbour; at the default
+of 32 pixels the same map becomes about 4,000 polygons and under 1MB.
 
-The fix is rasterio.features.sieve, which absorbs any patch smaller than a
-threshold into whichever neighbour surrounds it.  At the default of 32 pixels
-the same map becomes about 4,000 polygons and under 1 MB.
-
-Be honest about what that costs: sieving *changes the map*.  At size 32 it
-relabels roughly a sixth of the pixels.  It is applied to all three panels
-equally so they stay comparable, the amount is printed, and prediction.zarr
-still holds the untouched original.  Pass --sieve 1 to see the raw version.
+Sieving changes the map. At size 32 it relabels roughly a sixth of the
+pixels. It is applied to all three panels equally, the amount is
+printed, and prediction.zarr holds the original. Pass --sieve 1 to
+disable it.
 """
 
 import argparse

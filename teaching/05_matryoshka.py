@@ -7,22 +7,22 @@
 #     "matplotlib",
 # ]
 # ///
-"""Step 5 of 5 — classify with just the 16-dimension matryoshka prefix.
+"""Step 5 of 5: classify with the 16-dimension matryoshka prefix.
 
 The v2 model orders its 128 dimensions by importance, so a prefix of an
-embedding is itself a usable embedding.  The v2 store exploits that: it
-carries ``embeddings_d4`` and ``embeddings_d16`` arrays holding the
-first 4 and 16 dimensions, dequantised by the same ``scales``, so a
-client can read 16 dimensions for an eighth of the bytes of 128.
+embedding is itself a usable embedding. The v2 store carries
+``embeddings_d4`` and ``embeddings_d16`` arrays holding the first 4 and
+16 dimensions, dequantised by the same ``scales``, so a client can read
+16 dimensions for an eighth of the bytes of 128.
 
     uv run 05_matryoshka.py --lon 0.12 --lat 52.20
 
 This script reads both ``embeddings_d16`` and the full ``embeddings``
 for one window, trains the same k-NN on each, and draws the OSM labels
-and the two predictions side by side — how much accuracy do 112 fewer
-dimensions cost?
+and the two predictions side by side to show what the reduced prefix
+costs in accuracy.
 
-Depth arrays exist only in v2 stores; steps 1-4 use v1.
+Depth arrays exist only in v2 stores; steps 1 to 4 use v1.
 """
 
 import argparse

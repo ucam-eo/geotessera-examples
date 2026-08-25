@@ -6,31 +6,30 @@
 #     "osmnx>=2.0", "geopandas", "shapely", "rasterio", "scikit-learn",
 # ]
 # ///
-"""Step 4 of 5 — the classification from step 1, with plain zarr and xarray.
+"""Step 4 of 5: the classification from step 1, with plain zarr and xarray.
 
-Step 1 called ``GeoTesseraZarr``; this step is what that call did, spelled
-out: pick the UTM zone, open its group, tune the chunking, slice the
-window, dequantise, mask the sentinels.  It is more code and more to get
-wrong, but it is the way in when you need what the wrapper does not
-offer — custom chunking, keeping the window quantised to fit in memory,
-or reading the store from another tool entirely.
+Step 1 called ``GeoTesseraZarr``. This step performs the same work
+directly: select the UTM zone, open its group, tune the chunking, slice
+the window, dequantise, and mask the sentinels. It is the path to take
+when the library does not offer what is needed, such as custom chunking
+or keeping the window quantised to fit in memory.
 
     uv run 04_classify_raw_zarr.py --lon 0.12 --lat 52.20
 
-It writes prediction.zarr, same as step 1, so steps 2 and 3 render it.
+It writes prediction.zarr, the same as step 1, so steps 2 and 3 render it.
 
-Three things worth understanding:
+Three properties of the store matter here:
 
-1. The store holds one array per UTM zone, and they are enormous — zone 31 on
-   its own is 81 TB.  We never download it.  Slicing by coordinate fetches only
-   the chunks the window overlaps, so a 22 km square costs a few hundred MB.
+1. The store holds one array per UTM zone, and zone 31 alone is 81TB.
+   Slicing by coordinate fetches only the chunks the window overlaps, so
+   a 22km square costs a few hundred MB.
 
-2. Embeddings are quantised: int8 numbers plus one float scale per pixel.  The
-   real value is embeddings * scales.  That multiplication turns each number
-   from 1 byte into 4, so we do it a block of rows at a time, never all at once.
+2. Embeddings are quantised as int8 with one float scale per pixel, and
+   the real value is embeddings * scales. Dequantising quadruples the
+   size, so it is done a block of rows at a time.
 
-3. scales carries two sentinels: NaN means water, +inf means nothing written
-   here yet.  Both mean "no usable embedding", so np.isfinite is our mask.
+3. scales carries two sentinels: NaN means water and +inf means never
+   written. Both mean no usable embedding, so np.isfinite is the mask.
 """
 
 import argparse

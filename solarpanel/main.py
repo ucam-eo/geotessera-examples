@@ -16,11 +16,10 @@
 # ///
 """Solar panel detection from Tessera embeddings.
 
-Reads everything from the public zarr store: ``sample_points`` fetches
-the training and test embeddings, and ``iter_region`` streams the
-region in row strips so all ~34M pixels flow through the classifier
-without ever being in memory at once.  Output is a single prediction
-GeoTIFF on the native UTM grid.
+``sample_points`` fetches the training and test embeddings and
+``iter_region`` streams the region in row strips, so the ~34M pixels
+are classified without being in memory at once. Output is a single
+prediction GeoTIFF on the native 10m UTM grid.
 
 Usage:
     uv run main.py [--data-dir /path/to/data]

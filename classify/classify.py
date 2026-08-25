@@ -14,20 +14,16 @@
 """
 Pixel classification from locally downloaded tiles.
 
-This is the tile-download variant of classify_zarr.py: embeddings are
+This is the tile-download variant of classify_zarr.py. Embeddings are
 fetched as 0.1-degree tiles into embeddings/ and everything after that
-works offline.  Unless you specifically want the tiles on disk for reuse,
-prefer classify_zarr.py, which streams only the pixels it needs straight
-from the public zarr store.
+works offline. Prefer classify_zarr.py unless the tiles are wanted on
+disk for reuse.
 
-One thing this script is careful about, and worth copying: embeddings are
-never resampled.  Training pixels are read straight out of the tiles, the
-tiles are placed side by side on their shared UTM grid (tiles in one UTM
-zone already align exactly, so a mosaic needs no reprojection at all),
-and classification happens on that native grid.  If you need the *result*
-in another projection, warp the classified map afterwards — reprojecting
-the embeddings first would blend neighbouring embedding vectors into
-values the model was never trained on.
+Embeddings are never resampled. Training pixels are read directly from
+the tiles, the tiles are placed on their shared UTM grid, and
+classification happens on that grid. Reprojecting embeddings before
+classification would blend neighbouring vectors into values the model
+was never trained on; reproject the classified result instead.
 
 Examples
 --------

@@ -8,23 +8,23 @@
 # [tool.uv.sources]
 # geotessera = { path = "../../geotessera", editable = true }
 # ///
-"""Step 1 of 5 — classify Tessera embeddings, using OpenStreetMap as labels.
+"""Step 1 of 5: classify Tessera embeddings against OpenStreetMap labels.
 
-Tessera publishes 128 numbers (an "embedding") for every 10 m pixel of
-land, for every year.  This script reads a window of them through the
-geotessera package, asks OpenStreetMap what is actually on the ground
-there, and trains two classifiers to predict the second from the first.
+Tessera publishes a 128-dimensional embedding for every 10m pixel of
+land, for every year since 2017. This script reads a window of them
+through the geotessera package, rasterises OpenStreetMap features over
+the same grid as labels, and trains two classifiers to predict the
+labels from the embeddings.
 
     uv run 01_classify.py --lon 0.12 --lat 52.20
 
-It writes prediction.zarr; steps 2 and 3 turn that into pictures, and
-step 4 repeats this step with plain zarr to show what the library did.
+It writes prediction.zarr. Steps 2 and 3 render it, and step 4 repeats
+this step with plain zarr.
 
 ``GeoTesseraZarr.read_region`` takes a lon/lat box and returns float32
-embeddings on their native UTM grid, NaN where there is no data — zone
-routing, dequantisation and chunking are the library's problem.
-Embedding releases live side by side in the store, so ``--version``
-swaps the model with no other change.
+embeddings on their native UTM grid, with NaN where there is no data.
+Zone routing, dequantisation and chunking happen in the library.
+``--version`` selects the embedding release.
 """
 
 import argparse
@@ -172,8 +172,7 @@ def main():
     parser.add_argument("--per-class", type=int, default=1000, help="training pixels per class")
     parser.add_argument("--out", default="prediction.zarr")
     parser.add_argument("--version", default="v1",
-                        help='embedding release: "v1" (default) or a beta '
-                             'such as "v2-2B-L~beta1"')
+                        help='embedding release: "v1" (default) or "v2"')
     args = parser.parse_args()
 
     rng = np.random.default_rng(0)

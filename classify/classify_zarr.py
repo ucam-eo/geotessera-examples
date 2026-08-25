@@ -13,15 +13,14 @@
 # ///
 """Pixel classification using GeoTesseraZarr.
 
-Reads embeddings straight from the public zarr store: no downloads,
-native UTM at 10 m, zone routing and NaN masking in the library.
-Labels are GeoJSON Points in lon/lat — ``fetch_osm.py`` makes them from
-OpenStreetMap, ``liverpool.geojson`` is a sample.  Output is a
-colour-mapped GeoTIFF.
+Reads embeddings from the public zarr store on the native 10m UTM grid,
+with zone routing and NaN masking in the library. Labels are GeoJSON
+Points in lon/lat; ``fetch_osm.py`` makes them from OpenStreetMap and
+``liverpool.geojson`` is a sample. Output is a colour-mapped GeoTIFF.
 
   uv run classify_zarr.py --labels liverpool.geojson -o classified.tif
   uv run classify_zarr.py --labels labels.geojson -o out.tif --year 2025 --k 7
-  uv run classify_zarr.py --labels liverpool.geojson -o v2.tif --version "v2-2B-L~beta1"
+  uv run classify_zarr.py --labels liverpool.geojson -o v2.tif --version v2
 """
 
 import argparse
@@ -121,7 +120,7 @@ def main():
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--buffer", type=float, default=0.01)
     p.add_argument("--version", default="v1",
-                   help='embedding release: "v1" (default) or a beta such as "v2-2B-L~beta1"')
+                   help='embedding release: "v1" (default) or "v2"')
     args = p.parse_args()
     classify(args.labels, args.output, args.year, args.k, args.buffer, args.version)
 
