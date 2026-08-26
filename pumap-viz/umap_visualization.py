@@ -7,12 +7,9 @@
 #     "scikit-learn",
 #     "tensorflow",
 #     "joblib",
-#     "geotessera"
+#     "geotessera>=0.10.0"
 # ]
 # requires-python = ">=3.12,<3.13"
-#
-# [tool.uv.sources]
-# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """
 RGB visualisation of Tessera embeddings via parametric UMAP.
