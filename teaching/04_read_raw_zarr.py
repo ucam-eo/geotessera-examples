@@ -1,9 +1,12 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "geotessera>=0.10.0",
+#     "geotessera",
 #     "numpy", "xarray", "zarr", "dask", "pyproj",
 # ]
+#
+# [tool.uv.sources]
+# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """Step 4 of 5: read the store with plain zarr and xarray.
 

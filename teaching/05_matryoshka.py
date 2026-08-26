@@ -1,9 +1,12 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "geotessera>=0.10.0",
+#     "geotessera",
 #     "matplotlib", "numpy", "osmnx>=2.0", "rasterio", "scikit-learn",
 # ]
+#
+# [tool.uv.sources]
+# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """Step 5 of 5: classify with the 16-dimension matryoshka prefix.
 

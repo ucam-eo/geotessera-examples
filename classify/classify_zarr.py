@@ -2,11 +2,14 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "geotessera>=0.10.0",
+#   "geotessera",
 #   "numpy",
 #   "rasterio",
 #   "scikit-learn",
 # ]
+#
+# [tool.uv.sources]
+# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """Pixel classification using GeoTesseraZarr.
 

@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "geotessera>=0.10.0",
+#   "geotessera",
 #   "scikit-learn",
 #   "umap-learn",
 #   "matplotlib",
@@ -11,6 +11,9 @@
 #   "numpy",
 #   "zarr>=3.3",
 # ]
+#
+# [tool.uv.sources]
+# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """Solar panel detection from Tessera embeddings.
 
