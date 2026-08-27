@@ -2,7 +2,6 @@
 # dependencies = [
 #     "rasterio",
 #     "numpy",
-#     "zarr>=3.3",
 #     "umap-learn",
 #     "scikit-learn",
 #     "tensorflow",
@@ -29,6 +28,7 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 import json
 import hashlib
@@ -42,20 +42,22 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 import joblib
 
-from zarr.experimental.cache_store import CacheStore
-from zarr.storage import MemoryStore
-
 from geotessera import GeoTesseraZarr
-from geotessera.store import DEFAULT_STORE, zarr_store
+from geotessera.store import DEFAULT_STORE
 from geotessera.visualization import calculate_bbox_from_file
 from geotessera.country import get_country_bbox
 
 # The region is streamed twice, once to sample pixels for UMAP training
-# and once to render.  A session cache serves the second pass from
-# memory while the region fits within max_size.
+# and once to render.  cache_dir persists store metadata across runs and
+# caches chunk data for the session, so the second pass reads from cache
+# while the region fits within CACHE_BYTES.
 CACHE_BYTES = 2 * 1024**3
 
 warnings.filterwarnings("ignore")
+
+# geotessera reports progress through the logging module; show its INFO lines
+logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("geotessera").setLevel(logging.INFO)
 
 
 def get_file_hash(file_path: Path) -> str:
@@ -111,7 +113,7 @@ def load_embeddings_from_geotessera(
             return sampled_data
 
     all_data = []
-    for block, _, _ in gt.iter_region(bbox, year, progress=True):
+    for block, _, _ in gt.iter_region(bbox, year):
         pixels = block.reshape(-1, block.shape[2])
         valid = pixels[~np.isnan(pixels).any(axis=1)]
         n_samples = int(len(valid) * sample_rate)
@@ -257,7 +259,7 @@ def create_rgb_mosaic(
     print("Projecting the region to RGB, strip by strip")
     strips = []
     crs = None
-    for block, transform, crs in gt.iter_region(bbox, year, progress=True):
+    for block, transform, crs in gt.iter_region(bbox, year):
         h, w, c = block.shape
         pixels = block.reshape(-1, c)
         valid = ~np.isnan(pixels).any(axis=1)
@@ -414,11 +416,9 @@ def main():
         np.random.seed(args.random_seed)
 
         gt = GeoTesseraZarr(
-            CacheStore(
-                zarr_store(DEFAULT_STORE),
-                cache_store=MemoryStore(),
-                max_size=CACHE_BYTES,
-            )
+            DEFAULT_STORE,
+            cache_dir=Path(__file__).parent / "tessera-cache",
+            cache_max_size=CACHE_BYTES,
         )
 
         # Load and sample embedding data

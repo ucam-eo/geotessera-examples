@@ -26,7 +26,9 @@ Depth arrays exist only in v2 stores; steps 1 to 4 use v1.
 """
 
 import argparse
+import logging
 import math
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
@@ -37,6 +39,10 @@ from matplotlib.patches import Patch
 
 from geotessera import GeoTesseraZarr
 from geotessera.registry import zarr_store_url
+
+# geotessera reports progress through the logging module; show its INFO lines
+logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("geotessera").setLevel(logging.INFO)
 
 TILE = 0.1
 
@@ -178,7 +184,10 @@ def main():
     args = parser.parse_args()
 
     rng = np.random.default_rng(0)
-    gt = GeoTesseraZarr(zarr_store_url("v2"))
+    gt = GeoTesseraZarr(
+        zarr_store_url("v2"),
+        cache_dir=Path(__file__).parent / "tessera-cache",
+    )
     print(f"store {gt.url}, depths {sorted(gt.depths)}")
 
     west = math.floor(args.lon / TILE) * TILE

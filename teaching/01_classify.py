@@ -29,12 +29,18 @@ Zone routing, dequantisation and chunking happen in the library.
 
 import argparse
 import json
+import logging
+from pathlib import Path
 
 import numpy as np
 import xarray as xr
 
 from geotessera import GeoTesseraZarr
 from geotessera.registry import zarr_store_url
+
+# geotessera reports progress through the logging module; show its INFO lines
+logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("geotessera").setLevel(logging.INFO)
 
 TILE = 0.1  # Tessera tiles are a tenth of a degree square
 
@@ -177,7 +183,10 @@ def main():
 
     rng = np.random.default_rng(0)
 
-    gt = GeoTesseraZarr(zarr_store_url(args.version))
+    gt = GeoTesseraZarr(
+        zarr_store_url(args.version),
+        cache_dir=Path(__file__).parent / "tessera-cache",
+    )
     print(f"store {gt.url}, model {gt.model_version}")
 
     mosaic, transform, crs, bbox = read_window(

@@ -59,3 +59,11 @@ This is for artwork purposes!
 - Embedding releases sit side by side in the store, so every pipeline
   takes a `--version`-style flag and trialling a new model is a one-flag
   change.
+- geotessera reports progress on long reads through the standard
+  `logging` module rather than progress bars. Each script turns the
+  `geotessera` logger up to INFO so those lines show; there are no
+  `progress=` flags to pass.
+- Zarr-reading scripts pass `cache_dir="tessera-cache"` so store
+  metadata persists across runs and chunk data is cached for the
+  session (rereads within a run are free). The cache directory is
+  keyed per store version and safe to delete at any time.

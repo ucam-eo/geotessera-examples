@@ -25,7 +25,9 @@ Points in lon/lat; ``fetch_osm.py`` makes them from OpenStreetMap and
 
 import argparse
 import json
+import logging
 import sys
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -33,6 +35,10 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from geotessera import GeoTesseraZarr
 from geotessera.registry import zarr_store_url
+
+# geotessera reports progress through the logging module; show its INFO lines
+logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("geotessera").setLevel(logging.INFO)
 
 CLASS_COLORS = {
     "urban": (255, 99, 71), "water": (65, 105, 225), "forest": (34, 139, 34),
@@ -60,7 +66,10 @@ def classify(labels_path, output_path, year=2024, k=5, buffer=0.01, version="v1"
     i2l = {i: l for l, i in l2i.items()}
     print(f"{len(points)} points, {len(labels)} classes")
 
-    gt = GeoTesseraZarr(zarr_store_url(version))
+    gt = GeoTesseraZarr(
+        zarr_store_url(version),
+        cache_dir=Path(__file__).parent / "tessera-cache",
+    )
     print(f"Store: {gt.url}")
     print(f"  years={gt.years}, model={gt.model_version}")
 
@@ -83,7 +92,7 @@ def classify(labels_path, output_path, year=2024, k=5, buffer=0.01, version="v1"
     xs, ys = [p[0] for p in points], [p[1] for p in points]
     bbox = (min(xs)-buffer, min(ys)-buffer, max(xs)+buffer, max(ys)+buffer)
     print(f"Fetching [{bbox[0]:.4f}, {bbox[1]:.4f}, {bbox[2]:.4f}, {bbox[3]:.4f}]...")
-    mosaic, transform, out_crs = gt.read_region(bbox, year=year, progress=True)
+    mosaic, transform, out_crs = gt.read_region(bbox, year=year)
     h, w, nb = mosaic.shape
     print(f"  {h} x {w} px, {nb} bands")
 

@@ -41,6 +41,7 @@ Use fetch_osm.py to generate from OSM data.
 
 import argparse
 import json
+import logging
 import sys
 
 import numpy as np
@@ -48,6 +49,10 @@ import rasterio
 from sklearn.neighbors import KNeighborsClassifier
 
 from geotessera import GeoTessera
+
+# geotessera reports progress through the logging module; show its INFO lines
+logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("geotessera").setLevel(logging.INFO)
 
 CLASS_COLORS = {
     "urban":    (255, 99, 71),
