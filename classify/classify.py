@@ -2,14 +2,11 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "geotessera",
+#   "geotessera>=0.10.1",
 #   "numpy",
 #   "rasterio",
 #   "scikit-learn",
 # ]
-#
-# [tool.uv.sources]
-# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """
 Pixel classification from locally downloaded tiles.

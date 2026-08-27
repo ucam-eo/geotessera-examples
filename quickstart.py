@@ -2,11 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "geotessera",
+#   "geotessera>=0.10.1",
 # ]
-#
-# [tool.uv.sources]
-# geotessera = { path = "../geotessera", editable = true }
 # ///
 """Read one embedding from the public zarr store.
 

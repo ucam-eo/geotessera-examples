@@ -1,12 +1,9 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "geotessera",
+#     "geotessera>=0.10.1",
 #     "numpy", "osmnx>=2.0", "rasterio", "scikit-learn", "xarray", "zarr",
 # ]
-#
-# [tool.uv.sources]
-# geotessera = { path = "../../geotessera", editable = true }
 # ///
 """Step 1 of 5: classify Tessera embeddings against OpenStreetMap labels.
 
