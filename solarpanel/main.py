@@ -9,7 +9,7 @@
 #   "pyproj",
 #   "rasterio",
 #   "numpy",
-#   "zarr>=3.3",
+#   "shapely",
 # ]
 #
 # [tool.uv.sources]
@@ -25,11 +25,12 @@ patch around each of the largest detections via ``read_patch``, the
 fixed-size window a second-stage model would consume.
 
 Usage:
-    uv run main.py [--data-dir /path/to/data]
+    uv run main.py [--data-dir /path/to/data] [--version v2]
 """
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -37,23 +38,27 @@ import numpy as np
 import rasterio
 from sklearn.linear_model import LogisticRegression
 
-from zarr.experimental.cache_store import CacheStore
-from zarr.storage import MemoryStore
-
 from geotessera import GeoTesseraZarr
-from geotessera.store import DEFAULT_STORE, zarr_store
+from geotessera.registry import zarr_store_url
+
+# geotessera reports progress through the logging module; show its INFO lines
+logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("geotessera").setLevel(logging.INFO)
 
 YEAR = 2024
 STRIP_ROWS = 256
 
-# The training points fall inside the region streamed afterwards; a
-# session cache lets the strip pass reuse chunks the point sampling
+# The training points fall inside the region streamed afterwards;
+# cache_dir persists store metadata across runs and caches chunk data
+# for the session, so the strip pass reuses chunks the point sampling
 # already fetched.
 CACHE_BYTES = 2 * 1024**3
 
 parser = argparse.ArgumentParser(description='Solar panel detection using GeoTessera')
 parser.add_argument('--data-dir', type=Path,
                     help='Directory containing data files (default: script directory)')
+parser.add_argument('--version', default='v1',
+                    help='embedding release: "v1" (default) or "v2"')
 args = parser.parse_args()
 
 data_dir = args.data_dir if args.data_dir else Path(__file__).parent
@@ -78,15 +83,15 @@ train = train_positive + train_negative
 test = test_positive + test_negative
 
 gt = GeoTesseraZarr(
-    CacheStore(
-        zarr_store(DEFAULT_STORE), cache_store=MemoryStore(), max_size=CACHE_BYTES
-    )
+    zarr_store_url(args.version),
+    cache_dir=Path(__file__).parent / "tessera-cache",
+    cache_max_size=CACHE_BYTES,
 )
-print(f"Store {DEFAULT_STORE} (cached)")
+print(f"Store {gt.url} (cached)")
 
 print(f"Sampling {len(train)} training and {len(test)} test points...")
-train_embeddings = gt.sample_points([coord for coord, _ in train], YEAR, progress=False)
-test_embeddings = gt.sample_points([coord for coord, _ in test], YEAR, progress=False)
+train_embeddings = gt.sample_points([coord for coord, _ in train], YEAR)
+test_embeddings = gt.sample_points([coord for coord, _ in test], YEAR)
 
 train_labels = np.array([label for _, label in train], dtype=np.bool_)
 test_labels = np.array([label for _, label in test], dtype=np.bool_)
@@ -127,21 +132,27 @@ print(f"\nClassifying the region in strips of {STRIP_ROWS} rows ({crs})...")
 def classify_strip(block):
     pixels = block.reshape(-1, block.shape[2])
     valid = ~np.isnan(pixels).any(axis=1)
-    preds = np.zeros(len(pixels), dtype=np.uint8)
+    proba = np.zeros(len(pixels), dtype=np.float32)
     if valid.any():
-        preds[valid] = model.predict(pixels[valid])
+        proba[valid] = model.predict_proba(pixels[valid])[:, 1]
+    preds = proba > 0.5
     # 0 = solar panel (black), 255 = not (white); nodata stays white
-    return (255 - preds * 255).astype(np.uint8).reshape(-1, width)
+    image = (255 - preds * 255).astype(np.uint8).reshape(-1, width)
+    return image, proba.reshape(-1, width)
 
 
 output_dir = data_dir / "output"
 output_dir.mkdir(exist_ok=True)
 out_filename = output_dir / "prediction.tif"
-images = [classify_strip(first)]
+first_image, first_proba = classify_strip(first)
+images, probas = [first_image], [first_proba]
 for block, _, _ in strips:
-    images.append(classify_strip(block))
+    image, proba = classify_strip(block)
+    images.append(image)
+    probas.append(proba)
     print(f"  {sum(i.shape[0] for i in images)} rows classified")
 prediction = np.concatenate(images, axis=0)
+probability = np.concatenate(probas, axis=0)
 
 with rasterio.open(
     out_filename, "w", driver="GTiff", height=prediction.shape[0], width=width,
@@ -151,19 +162,62 @@ with rasterio.open(
 
 print(f"\n✅ Prediction saved to {out_filename}")
 
-# Second stage: extract an embedding patch around each of the largest
-# detections, rescore its pixels with the trained model, and report the
-# detections with their confidence.
 from pyproj import Transformer
 from scipy import ndimage
 
 detected = prediction == 0
+to_ll = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+
+# Connected components of the mask; each footprint's confidence is the
+# mean P(solar panel) over its pixels. rasterio's shapes() below traces
+# the same 4-connected components, so a point inside a polygon indexes
+# its component in `labelled`.
 labelled, n_found = ndimage.label(detected)
+component_confidence = (
+    ndimage.mean(probability, labelled, range(1, n_found + 1)) if n_found else [])
+
+# Vectorise the mask into polygon footprints. Tracing happens in the
+# raster's UTM CRS so areas are square metres; only the output ring is
+# reprojected to lon/lat.
+from rasterio.features import shapes
+from shapely.geometry import mapping, shape
+from shapely.ops import transform as reproject
+
+
+def footprint_confidence(poly):
+    inside = poly.representative_point()
+    col, row = ~transform * (inside.x, inside.y)
+    return float(component_confidence[labelled[int(row), int(col)] - 1])
+
+
+MIN_AREA_M2 = 2000  # drop detections under 20 pixels
+footprints = sorted(
+    (p for p in (shape(g) for g, _ in
+                 shapes(detected.astype(np.uint8), mask=detected, transform=transform))
+     if p.area >= MIN_AREA_M2),
+    key=lambda p: p.area, reverse=True)
+with open(output_dir / "polygons.geojson", "w") as f:
+    json.dump({"type": "FeatureCollection", "features": [
+        {
+            "type": "Feature",
+            "geometry": mapping(reproject(to_ll.transform, poly)),
+            "properties": {"area_m2": round(poly.area),
+                           "area_ha": round(poly.area / 10_000, 2),
+                           "confidence": round(footprint_confidence(poly), 3)},
+        }
+        for poly in footprints
+    ]}, f)
+print(f"Wrote {output_dir / 'polygons.geojson'}: {len(footprints)} footprints "
+      f"of at least {MIN_AREA_M2} m², "
+      f"{sum(p.area for p in footprints) / 10_000:,.0f} ha total")
+
+# Second stage: extract an embedding patch around each of the largest
+# detections, rescore its pixels with the trained model, and report the
+# detections with their confidence.
 if n_found:
     sizes = ndimage.sum_labels(np.ones_like(labelled), labelled, range(1, n_found + 1))
     top = np.argsort(sizes)[::-1][:5] + 1
     centres = ndimage.center_of_mass(detected, labelled, top)
-    to_ll = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     print(f"\nScoring the {len(top)} largest of {n_found} detections...")
 
     detections = []

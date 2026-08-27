@@ -8,17 +8,28 @@ explains the store format underneath.
 
 ```
 uv run main.py
+uv run main.py --version v2   # trial a different embedding release
+```
+
+To browse the detections on an OpenStreetMap base layer, serve this
+directory and open [map.html](map.html), which picks up every GeoJSON
+in `output/`:
+
+```
+python3 -m http.server
+# then open http://localhost:8000/map.html
 ```
 
 This samples the training and test embeddings, trains and evaluates a
 logistic regression, streams the region through the model in row
 strips, and writes the prediction to `output/prediction.tif` on the
-native 10m UTM grid. It then extracts a 64x64 embedding patch around
-each of the five largest detections with `read_patch`, rescores the
-patch pixels with the trained model, and writes three artefacts to
-`output/`: the patches as `patch_NN.tif`, the detections with their
-confidence as `detections.geojson` for the QGIS project, and a review
-card of the probability maps as `detections.png`. It also writes
+native 10m UTM grid, with every detection above 2000 m² traced as a
+polygon footprint into `output/polygons.geojson`. It then extracts a
+64x64 embedding patch around each of the five largest detections with
+`read_patch`, rescores the patch pixels with the trained model, and
+writes the patches as `patch_NN.tif`, the scored detections as
+`detections.geojson` for the QGIS project, and a review card of the
+probability maps as `detections.png`. It also writes
 `train_embeddings_umap.png`, a 2D UMAP of the training embeddings, and
 prints how test accuracy varies with the number of labels.
 
@@ -33,15 +44,16 @@ solarpanel/
 ├── train_negative.geojson       # Training points without solar panels
 ├── test_positive.geojson        # Test points with solar panels
 ├── test_negative.geojson        # Test points without solar panels
+├── map.html                     # MapLibre viewer for output/*.geojson
 ├── solarpanel.qgz               # QGIS project for visualisation
 └── output/                      # Prediction, patches, detections (auto-created)
 ```
 
 ## How it works
 
-The store is wrapped in zarr's experimental `CacheStore`, so chunks
-fetched while sampling the training points are reused when the same
-region streams through the classifier.
+The store is opened with `cache_dir=`, so chunks fetched while sampling
+the training points are reused when the same region streams through the
+classifier, and store metadata persists across runs.
 
 The labelled points are sampled in one call, which issues a bulk read
 per UTM zone:
@@ -75,6 +87,29 @@ proba = model.predict_proba(patch.reshape(-1, 128))[:, 1]
 
 Each patch is rescored pixel by pixel, giving the detection a
 confidence and a probability map for the review card.
+
+Before that, the whole mask is vectorised with
+`rasterio.features.shapes`: tracing happens on the UTM grid so areas
+come out in square metres, and every connected detection of at least
+2000 m² (20 pixels) lands in `output/polygons.geojson` with its area
+and confidence attached — the strip pass keeps `predict_proba`
+alongside the class mask, and a footprint's confidence is the mean
+P(solar panel) over its pixels.
+
+## Exercise: the runway problem
+
+Browse the polygons over the satellite base layer in `map.html` and
+you will spot that several "solar farms" are in fact runways — the
+region has a cluster of airfields, and their large paved surfaces look
+enough like panel arrays to this classifier. They tend to sit in the
+lower confidence range, but not all of them do.
+
+Improving this is left as an exercise. The model has never been shown
+a runway. Drop a handful of points on the offending airfields into
+`train_negative.geojson` (geojson.io or QGIS on top of `map.html`'s
+satellite view makes this quick) and re-run `main.py`.
+The label-subset analysis the run prints will show how few points
+are needed to move the boundary.
 
 ## Viewing the result
 

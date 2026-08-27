@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solar panel detections</title>
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+  body { margin: 0; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 12px; left: 12px; z-index: 2;
+    background: rgba(255, 255, 255, 0.94); color: #1a1a1a;
+    font: 13px/1.45 system-ui, sans-serif;
+    padding: 10px 14px; border-radius: 8px;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+    max-width: 300px;
+  }
+  #panel h1 { font-size: 14px; margin: 0 0 6px; }
+  #panel ul { list-style: none; margin: 6px 0 0; padding: 0; }
+  #panel li { margin: 2px 0; }
+  #panel .swatch {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 2px; margin-right: 6px;
+  }
+  #panel .hint { color: #666; margin-top: 6px; }
+  #panel code { background: #eee; padding: 0 3px; border-radius: 3px; }
+  #basemap, #legend { margin-top: 8px; border-top: 1px solid #ddd; padding-top: 6px; }
+  #basemap label { margin-right: 12px; cursor: pointer; }
+  #basemap input { vertical-align: -1px; margin-right: 3px; }
+  #legend .bar { height: 8px; border-radius: 4px; margin: 3px 0 1px; }
+  #legend .ends { display: flex; justify-content: space-between; color: #666; }
+  .maplibregl-popup-content {
+    font: 12px/1.5 system-ui, sans-serif; padding: 8px 12px;
+  }
+  .maplibregl-popup-content table { border-collapse: collapse; }
+  .maplibregl-popup-content td { padding: 1px 6px 1px 0; }
+  .maplibregl-popup-content td:first-child { color: #666; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>Solar panel detections</h1>
+  <div id="files">Loading <code>output/*.geojson</code>…</div>
+  <div id="basemap">
+    <label><input type="radio" name="basemap" value="osm" checked>OSM</label>
+    <label><input type="radio" name="basemap" value="satellite">Satellite</label>
+  </div>
+  <div id="legend" hidden>
+    Confidence P(solar panel)
+    <div class="bar"></div>
+    <div class="ends"></div>
+  </div>
+</div>
+<script>
+"use strict";
+
+const PALETTE = ["#e6194b", "#3b76d8", "#2a9d3c", "#b0529e", "#e07f19", "#12999e"];
+
+// Features carrying a `confidence` property (main.py's scored
+// detections) are coloured by it; everything else keeps its file
+// colour. The legend gradient derives from the same stops.
+const CONF_STOPS = [[0, "#ffffb2"], [0.5, "#fd8d3c"], [1, "#bd0026"]];
+const CONF_RAMP = ["interpolate", ["linear"],
+  ["to-number", ["get", "confidence"]], ...CONF_STOPS.flat()];
+const confColor = (fallback) =>
+  ["case", ["has", "confidence"], CONF_RAMP, fallback];
+
+document.querySelector("#legend .bar").style.background = "linear-gradient(" +
+  `to right, ${CONF_STOPS.map(([p, c]) => `${c} ${p * 100}%`).join(", ")})`;
+document.querySelector("#legend .ends").innerHTML =
+  CONF_STOPS.map(([p]) => `<span>${p}</span>`).join("");
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: {
+    version: 8,
+    glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "&copy; OpenStreetMap contributors",
+      },
+      satellite: {
+        type: "raster",
+        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/" +
+                "World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+        tileSize: 256,
+        attribution: "Tiles &copy; Esri &mdash; Source: Esri, Maxar, " +
+                     "Earthstar Geographics, and the GIS User Community",
+      },
+    },
+    layers: [
+      { id: "osm", type: "raster", source: "osm" },
+      { id: "satellite", type: "raster", source: "satellite",
+        layout: { visibility: "none" } },
+    ],
+  },
+});
+map.addControl(new maplibregl.NavigationControl());
+map.addControl(new maplibregl.ScaleControl());
+
+// Both base layers sit under the data layers; the selector just flips
+// which one is visible.
+document.getElementById("basemap").addEventListener("change", (e) => {
+  for (const id of ["osm", "satellite"])
+    map.setLayoutProperty(id, "visibility",
+      e.target.value === id ? "visible" : "none");
+});
+
+// A static page cannot list a directory, but `python -m http.server`
+// serves an HTML index for output/ whose links we can parse. Fall back
+// to the files main.py is known to write.
+async function findGeojsonFiles() {
+  try {
+    const res = await fetch("output/");
+    if (res.ok && (res.headers.get("content-type") || "").includes("html")) {
+      const names = [...new DOMParser()
+        .parseFromString(await res.text(), "text/html")
+        .querySelectorAll("a[href]")]
+        .map((a) => a.getAttribute("href"))
+        .filter((h) => /\.geojson$/i.test(h));
+      if (names.length) return names.map((n) => "output/" + n);
+    }
+  } catch { /* no directory index; use the fallback */ }
+  return ["output/detections.geojson", "output/polygons.geojson"];
+}
+
+function extendBounds(bounds, geometry) {
+  const walk = (c) => {
+    if (typeof c[0] === "number") bounds.extend(c);
+    else c.forEach(walk);
+  };
+  if (geometry) walk(geometry.coordinates);
+}
+
+function addFileLayers(url, data, color) {
+  const id = url.replace(/[^a-z0-9]+/gi, "-");
+  map.addSource(id, { type: "geojson", data });
+  map.addLayer({
+    id: id + "-fill", source: id, type: "fill",
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: { "fill-color": confColor(color), "fill-opacity": 0.25 },
+  });
+  map.addLayer({
+    id: id + "-outline", source: id, type: "line",
+    filter: ["in", ["geometry-type"], ["literal", ["Polygon", "LineString"]]],
+    paint: { "line-color": color, "line-width": 2 },
+  });
+  map.addLayer({
+    id: id + "-points", source: id, type: "circle",
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-color": confColor(color),
+      "circle-opacity": 0.75,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 1.5,
+      "circle-radius": [
+        "case", ["has", "area_px"],
+        ["interpolate", ["linear"], ["sqrt", ["get", "area_px"]], 0, 5, 100, 16],
+        7,
+      ],
+    },
+  });
+  map.addLayer({
+    id: id + "-conf-labels", source: id, type: "symbol",
+    filter: ["all", ["==", ["geometry-type"], "Point"], ["has", "confidence"]],
+    layout: {
+      "text-field": ["concat", "p=", ["to-string", ["get", "confidence"]]],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": 11,
+      "text-anchor": "top",
+      "text-offset": [0, 1.4],
+    },
+    paint: {
+      "text-color": "#1a1a1a",
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 1.5,
+    },
+  });
+  const targets = [id + "-fill", id + "-points"];
+  map.on("click", targets, (e) => {
+    const rows = Object.entries(e.features[0].properties)
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
+      .join("");
+    new maplibregl.Popup()
+      .setLngLat(e.lngLat)
+      .setHTML(`<table>${rows || "<tr><td>(no properties)</td></tr>"}</table>`)
+      .addTo(map);
+  });
+  map.on("mouseenter", targets, () => (map.getCanvas().style.cursor = "pointer"));
+  map.on("mouseleave", targets, () => (map.getCanvas().style.cursor = ""));
+}
+
+async function load() {
+  const urls = await findGeojsonFiles();
+  const bounds = new maplibregl.LngLatBounds();
+  const items = [];
+  let loaded = 0;
+  let hasConfidence = false;
+
+  for (const [i, url] of urls.entries()) {
+    const name = url.replace("output/", "");
+    let swatch = "#bbb";
+    let note = "not loaded";
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      const features = data.features || [];
+      if (!features.length) throw new Error("no features");
+      addFileLayers(url, data, PALETTE[i % PALETTE.length]);
+      features.forEach((f) => extendBounds(bounds, f.geometry));
+      hasConfidence ||= features.some((f) => f.properties && "confidence" in f.properties);
+      swatch = PALETTE[i % PALETTE.length];
+      note = `${features.length} feature${features.length === 1 ? "" : "s"}`;
+      loaded += 1;
+    } catch { /* leave the "not loaded" note */ }
+    items.push(`<li><span class="swatch" style="background:${swatch}"></span>` +
+      `${name} &mdash; ${note}</li>`);
+  }
+
+  // The region main.py classifies, as a dashed outline for context.
+  try {
+    const [w, s, e, n] = (await (await fetch("bbox.json")).json()).bbox;
+    map.addSource("region", {
+      type: "geojson",
+      data: { type: "Feature", geometry: { type: "Polygon",
+        coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } },
+    });
+    map.addLayer({
+      id: "region-outline", source: "region", type: "line",
+      paint: { "line-color": "#444", "line-width": 1.5, "line-dasharray": [3, 2] },
+    });
+    bounds.extend([w, s]);
+    bounds.extend([e, n]);
+  } catch { /* bbox.json is optional context */ }
+
+  if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 60, maxZoom: 14 });
+  document.getElementById("legend").hidden = !hasConfidence;
+
+  document.getElementById("files").innerHTML =
+    `<ul>${items.join("")}</ul>` +
+    (loaded ? "" :
+      `<div class="hint">No GeoJSON found. Run <code>uv run main.py</code> to ` +
+      `produce <code>output/detections.geojson</code>, and serve this page with ` +
+      `<code>python3 -m http.server</code> from the solarpanel directory.</div>`);
+}
+
+map.on("load", load);
+</script>
+</body>
+</html>
